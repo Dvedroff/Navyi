@@ -22,6 +22,7 @@ export class Sprites {
   lightSprite: HTMLCanvasElement | null = null;
   torchGlow: HTMLCanvasElement | null = null;
   eyeSprite: HTMLCanvasElement | null = null;
+  glowBody: HTMLCanvasElement | null = null;
 
   build() {
     // Спрайт света (радиальный градиент)
@@ -61,6 +62,18 @@ export class Sprites {
     ectx.fillStyle = eg;
     ectx.fillRect(0, 0, 16, 16);
     this.eyeSprite = ec;
+
+    // Glow-тело для паука
+    const gc = document.createElement('canvas');
+    gc.width = gc.height = 128;
+    const gctx = gc.getContext('2d')!;
+    const gg = gctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+    gg.addColorStop(0, 'rgba(120,180,160,0.15)');
+    gg.addColorStop(0.4, 'rgba(80,140,120,0.08)');
+    gg.addColorStop(1, 'rgba(40,80,60,0)');
+    gctx.fillStyle = gg;
+    gctx.fillRect(0, 0, 128, 128);
+    this.glowBody = gc;
   }
 }
 
@@ -1073,6 +1086,26 @@ export class Sound {
     osc.stop(this.ctx.currentTime + 0.5);
   }
 
+  playSpiderAmbient() {
+    if (!this.ctx || !this.masterGain) return;
+    // Низкий пульсирующий гул
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = 55 + Math.random() * 10;
+    const gain = this.ctx.createGain();
+    gain.gain.value = 0.04;
+    gain.gain.linearRampToValueAtTime(0.06, this.ctx.currentTime + 0.5);
+    gain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 2);
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 100;
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start();
+    osc.stop(this.ctx.currentTime + 2);
+  }
+
   toggle() {
     this.enabled = !this.enabled;
     if (this.masterGain) {
@@ -1081,11 +1114,396 @@ export class Sound {
   }
 }
 
+// === Щупальце паука ===
+interface Anchor {
+  x: number;
+  y: number;
+  cooldownUntil: number;
+  claimedBy: LiquidSpider | null;
+  highlight: number;
+}
+
+class Tentacle {
+  spider: LiquidSpider;
+  anchor: Anchor;
+  progress = 0;
+  dead = false;
+  retracting = false;
+  startX = 0;
+  startY = 0;
+  hue: number;
+
+  constructor(spider: LiquidSpider, anchor: Anchor) {
+    this.spider = spider;
+    this.anchor = anchor;
+    this.startX = spider.x;
+    this.startY = spider.y;
+    this.hue = spider.hue;
+  }
+
+  update(dt: number, globalTime: number) {
+    // Обновляем начальную точку (паук двигается)
+    this.startX = this.spider.x;
+    this.startY = this.spider.y;
+
+    if (this.retracting) {
+      this.progress -= dt * 2;
+      if (this.progress <= 0) this.dead = true;
+    } else {
+      this.progress += dt * CFG.SPIDER_TENTACLE_SPEED;
+      if (this.progress >= 1) {
+        // Полностью вытянуто — начинаем втягивать через некоторое время
+        this.retracting = true;
+      }
+    }
+  }
+
+  draw(ctx: CanvasRenderingContext2D, camX: number, camY: number) {
+    if (this.dead) return;
+    const sx = this.startX - camX;
+    const sy = this.startY - camY;
+    const ax = this.anchor.x - camX;
+    const ay = this.anchor.y - camY;
+
+    // Интерполированная конечная точка
+    const ex = sx + (ax - sx) * Math.min(1, this.progress);
+    const ey = sy + (ay - sy) * Math.min(1, this.progress);
+
+    // Волнистая линия щупальца
+    const dx = ex - sx;
+    const dy = ey - sy;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len < 1) return;
+
+    const nx = -dy / len;
+    const ny = dx / len;
+    const wave = Math.sin(this.progress * 6 + this.spider.pulse) * 8 * this.progress;
+
+    const mx = (sx + ex) / 2 + nx * wave;
+    const my = (sy + ey) / 2 + ny * wave;
+
+    ctx.strokeStyle = `hsla(${this.hue},60%,50%,${0.3 + this.progress * 0.3})`;
+    ctx.lineWidth = 2 + this.progress;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.quadraticCurveTo(mx, my, ex, ey);
+    ctx.stroke();
+
+    // Точка прикрепления
+    if (this.progress > 0.5) {
+      ctx.fillStyle = `hsla(${this.hue},70%,60%,${(this.progress - 0.5) * 0.6})`;
+      ctx.beginPath();
+      ctx.arc(ex, ey, 3 + this.progress * 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+// === Жидкий паук (редкое главное существо) ===
+export class LiquidSpider {
+  x = 0;
+  y = 0;
+  vx = 0;
+  vy = 0;
+  id: number;
+  tentacles: Tentacle[] = [];
+  maxTentacles: number;
+  reachRadius: number;
+  attachTimer = 0;
+  pulse = 0;
+  hue: number;
+  alive = true;
+  anchors: Anchor[] = [];
+  spawnAlpha = 0; // эффект проявления (0→1 за 3 секунды)
+
+  constructor(x: number, y: number, id: number) {
+    this.id = id;
+    this.x = x;
+    this.y = y;
+    this.maxTentacles = CFG.SPIDER_MAX_TENTACLES;
+    this.reachRadius = CFG.SPIDER_REACH;
+    this.hue = CFG.SPIDER_HUE + id * 25;
+    this.pulse = Math.random() * Math.PI * 2;
+    this.attachTimer = Math.random() * 0.5;
+  }
+
+  // Генерация якорей вокруг паука
+  generateAnchors(map: GameMap) {
+    this.anchors = [];
+    // Создаём якоря по кругу и у стен в радиусе досягаемости
+    const ringCount = 12;
+    const rings = 3;
+
+    for (let ring = 1; ring <= rings; ring++) {
+      const radius = (this.reachRadius / rings) * ring;
+      for (let i = 0; i < ringCount; i++) {
+        const angle = (i / ringCount) * Math.PI * 2 + (ring * 0.3);
+        const jitter = (Math.random() - 0.5) * 30;
+        const ax = this.x + Math.cos(angle) * (radius + jitter);
+        const ay = this.y + Math.sin(angle) * (radius + jitter);
+
+        // Проверяем что якорь на проходимой территории или у стены
+        const dist = Math.sqrt((ax - this.x) ** 2 + (ay - this.y) ** 2);
+        if (dist > this.reachRadius * 1.1 || dist < 25) continue;
+
+        // 60% якорей у стен, 40% на полу (для разнообразия)
+        const nearWall = map.isWall(ax + 15, ay) || map.isWall(ax - 15, ay) ||
+                         map.isWall(ax, ay + 15) || map.isWall(ax, ay - 15);
+        if (nearWall || Math.random() < 0.35) {
+          this.anchors.push({
+            x: ax, y: ay,
+            cooldownUntil: 0,
+            claimedBy: null,
+            highlight: nearWall ? 0.4 : Math.random() * 0.2
+          });
+        }
+      }
+    }
+  }
+
+  attachToBest(now: number, playerX: number, playerY: number) {
+    let best: Anchor | null = null;
+    let bestScore = Infinity;
+
+    // Направление к игроку (паук медленно тянется к свету)
+    const ldx = playerX - this.x;
+    const ldy = playerY - this.y;
+    const ldist = Math.sqrt(ldx * ldx + ldy * ldy);
+    const hasDir = ldist > 50;
+    const lx = hasDir ? ldx / ldist : 0;
+    const ly = hasDir ? ldy / ldist : 0;
+
+    for (const a of this.anchors) {
+      if (a.cooldownUntil > now) continue;
+      if (a.claimedBy) continue;
+
+      const dx = a.x - this.x;
+      const dy = a.y - this.y;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d > this.reachRadius || d < 18) continue;
+
+      let score = d;
+
+      if (hasDir) {
+        const nx = dx / d;
+        const ny = dy / d;
+        const dot = nx * lx + ny * ly;
+        score -= dot * 200; // бонус за якоря в направлении игрока
+      }
+
+      score -= a.highlight * 400;
+
+      if (score < bestScore) {
+        bestScore = score;
+        best = a;
+      }
+    }
+
+    if (best) {
+      this.tentacles.push(new Tentacle(this, best));
+      best.claimedBy = this;
+    }
+  }
+
+  releaseTentacle(t: Tentacle) {
+    if (t.anchor && t.anchor.claimedBy === this) {
+      t.anchor.claimedBy = null;
+    }
+  }
+
+  private anchorRegenTimer = 5; // регенерация якорей каждые 5с
+
+  update(dt: number, player: Player, map: GameMap, spiders: LiquidSpider[]) {
+    if (!this.alive) return;
+    const now = performance.now();
+    this.pulse += dt * 2.5;
+
+    // Проявление
+    if (this.spawnAlpha < 1) {
+      this.spawnAlpha = Math.min(1, this.spawnAlpha + dt * 0.33); // ~3 секунды
+    }
+
+    // Периодическая регенерация якорей
+    this.anchorRegenTimer -= dt;
+    if (this.anchorRegenTimer <= 0) {
+      this.anchorRegenTimer = 4 + Math.random() * 3;
+      this.generateAnchors(map);
+    }
+
+    // Обновляем якоря если паук сильно сдвинулся
+    const centerAnchor = this.anchors.length > 0
+      ? this.anchors.reduce((a, b) => ({ x: a.x + b.x, y: a.y + b.y }), { x: 0, y: 0 })
+      : { x: this.x, y: this.y };
+    if (this.anchors.length > 0) {
+      centerAnchor.x /= this.anchors.length;
+      centerAnchor.y /= this.anchors.length;
+    }
+
+    // Обновление щупалец
+    for (let i = this.tentacles.length - 1; i >= 0; i--) {
+      const t = this.tentacles[i];
+      t.update(dt, now);
+
+      if (t.dead) {
+        this.releaseTentacle(t);
+        this.tentacles.splice(i, 1);
+        continue;
+      }
+
+      // Если щупальце полностью вытянуто и паук рядом — отпустить
+      if (t.progress >= 1) {
+        const d = Math.sqrt((t.anchor.x - this.x) ** 2 + (t.anchor.y - this.y) ** 2);
+        if (d < 30) {
+          t.anchor.cooldownUntil = now + 1500;
+          t.anchor.highlight = Math.min(t.anchor.highlight, 0.15);
+          this.releaseTentacle(t);
+          this.tentacles.splice(i, 1);
+        }
+      }
+    }
+
+    // Прикрепление новых щупалец
+    this.attachTimer -= dt;
+    if (this.attachTimer <= 0 && this.tentacles.length < this.maxTentacles) {
+      this.attachTimer = CFG.SPIDER_ATTACH_INTERVAL + Math.random() * 0.3;
+      this.attachToBest(now, player.x, player.y);
+    }
+
+    // Движение — только через щупальца
+    let activeCount = 0;
+    let tx = 0, ty = 0;
+    for (const t of this.tentacles) {
+      if (t.progress > 0.45) {
+        activeCount++;
+        tx += t.anchor.x;
+        ty += t.anchor.y;
+      }
+    }
+
+    if (activeCount > 0) {
+      tx /= activeCount;
+      ty /= activeCount;
+
+      const dx = tx - this.x;
+      const dy = ty - this.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+
+      const desiredSpeed = Math.min(CFG.SPIDER_SPEED, dist * 1.5);
+      const ax = (dx / dist) * desiredSpeed;
+      const ay = (dy / dist) * desiredSpeed;
+
+      const k = Math.min(1, dt * 3);
+      this.vx += (ax - this.vx) * k;
+      this.vy += (ay - this.vy) * k;
+
+      // Разделение с другими пауками
+      let sepX = 0, sepY = 0;
+      for (const other of spiders) {
+        if (other === this) continue;
+        const dxs = this.x - other.x;
+        const dys = this.y - other.y;
+        const ds = Math.sqrt(dxs * dxs + dys * dys);
+        if (ds < CFG.SPIDER_SEPARATION && ds > 0.01) {
+          const f = (CFG.SPIDER_SEPARATION - ds) / CFG.SPIDER_SEPARATION;
+          sepX += (dxs / ds) * f * 80;
+          sepY += (dys / ds) * f * 80;
+        }
+      }
+      this.vx += sepX * dt;
+      this.vy += sepY * dt;
+    } else {
+      // Без щупалец — затухание
+      const damp = Math.pow(0.01, dt);
+      this.vx *= damp;
+      this.vy *= damp;
+    }
+
+    // Реакция на свет — паук отступает от яркого факела
+    const toPlayerDx = this.x - player.x;
+    const toPlayerDy = this.y - player.y;
+    const toPlayerDist = Math.sqrt(toPlayerDx * toPlayerDx + toPlayerDy * toPlayerDy);
+    const torchR = player.getTorchRadius();
+
+    if (toPlayerDist < torchR * 0.8 && player.fuel > 10) {
+      // Отталкивание от света (мягкое)
+      const repelForce = (1 - toPlayerDist / (torchR * 0.8)) * 30;
+      if (toPlayerDist > 1) {
+        this.vx += (toPlayerDx / toPlayerDist) * repelForce * dt;
+        this.vy += (toPlayerDy / toPlayerDist) * repelForce * dt;
+      }
+    }
+
+    // Интеграция позиции (единственная!)
+    const nx = this.x + this.vx * dt;
+    const ny = this.y + this.vy * dt;
+    if (map.isWalkable(nx, this.y, 12)) this.x = nx;
+    if (map.isWalkable(this.x, ny, 12)) this.y = ny;
+
+    // Кламп к карте
+    this.x = Math.max(20, Math.min(map.w * CFG.TILE - 20, this.x));
+    this.y = Math.max(20, Math.min(map.h * CFG.TILE - 20, this.y));
+  }
+
+  draw(ctx: CanvasRenderingContext2D, camX: number, camY: number, sprites: Sprites) {
+    if (!this.alive) return;
+
+    // Применяем альфу проявления
+    ctx.globalAlpha = this.spawnAlpha;
+
+    // Щупальца
+    for (const t of this.tentacles) t.draw(ctx, camX, camY);
+
+    const sx = this.x - camX;
+    const sy = this.y - camY;
+
+    // Glow-тело
+    if (sprites.glowBody) {
+      const size = CFG.SPIDER_SIZE + Math.sin(this.pulse) * 6;
+      ctx.globalAlpha = 0.7;
+      ctx.drawImage(sprites.glowBody, sx - size, sy - size, size * 2, size * 2);
+      ctx.globalAlpha = 1;
+    }
+
+    // Тело — органическая форма
+    ctx.beginPath();
+    const n = 10;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      const r = 14 + Math.sin(this.pulse + i * 1.7) * 4;
+      const px = sx + Math.cos(a) * r;
+      const py = sy + Math.sin(a) * r;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fillStyle = `hsla(${this.hue},50%,40%,0.2)`;
+    ctx.fill();
+    ctx.strokeStyle = `hsla(${this.hue},60%,50%,0.3)`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Центральная точка (ядро)
+    ctx.beginPath();
+    ctx.arc(sx, sy, 4, 0, Math.PI * 2);
+    ctx.fillStyle = `hsla(${this.hue},70%,70%,0.6)`;
+    ctx.fill();
+
+    // Внутреннее свечение
+    ctx.beginPath();
+    ctx.arc(sx, sy, 2, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(220,240,230,0.5)';
+    ctx.fill();
+
+    ctx.globalAlpha = 1;
+  }
+}
+
 // === Режиссёр ===
 export class Director {
   tension = 0;
   whisperTimer = 0;
   spawnTimer = 0;
+  spiderSpawnTimer = 30; // первый паук через ~30с
   bus: Bus;
 
   constructor(bus: Bus) {
@@ -1113,6 +1531,13 @@ export class Director {
     if (this.spawnTimer <= 0 && aliveNavs < maxNavs) {
       this.spawnTimer = spawnInterval + Math.random() * 3;
       this.spawnNav(player, map, navs);
+    }
+
+    // Спавн пауков (редких главных существ)
+    this.spiderSpawnTimer -= dt;
+    if (this.spiderSpawnTimer <= 0 && this.tension >= CFG.SPIDER_SPAWN_TENSION) {
+      this.spiderSpawnTimer = 80 + Math.random() * 60; // следующий через 80-140с (очень редко)
+      this.bus.emit('spider.spawn', player, map);
     }
   }
 
@@ -1283,6 +1708,7 @@ export class Game {
   // Состояние
   state: GameState = 'menu';
   navs: Nav[] = [];
+  spiders: LiquidSpider[] = [];
   props: Prop[] = [];
   relics = 0;
   timeAlive = 0;
@@ -1330,6 +1756,25 @@ export class Game {
 
     this.bus.on('nav.spawn', () => {
       // Тряска при появлении навьи рядом
+    });
+
+    this.bus.on('spider.spawn', (player: Player, map: GameMap) => {
+      if (this.spiders.length >= CFG.SPIDER_MAX) return;
+      // Спавн паука вдали от игрока, в тёмном углу
+      const farAnchors = map.navAnchors.filter(a => {
+        const dx = a.x - player.x;
+        const dy = a.y - player.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        return dist > 400 && dist < 900;
+      });
+      if (farAnchors.length === 0) return;
+      const anchor = farAnchors[Math.floor(Math.random() * farAnchors.length)];
+      const spider = new LiquidSpider(anchor.x, anchor.y, this.spiders.length);
+      spider.generateAnchors(map);
+      this.spiders.push(spider);
+      this.camera.shake(3);
+      this.sound.playSpiderAmbient();
+      this.onToast?.('Что-то большое шевелится в темноте...');
     });
 
     // Resize с дебаунсом
@@ -1400,6 +1845,7 @@ export class Game {
 
   private setupLevel() {
     this.navs = [];
+    this.spiders = [];
     this.props = [];
     this.relics = 0;
     this.timeAlive = 0;
@@ -1538,6 +1984,23 @@ export class Game {
     // Удаляем мёртвых
     this.navs = this.navs.filter(n => n.alive || n.state === 'dissolve');
 
+    // Пауки (медленные, не атакуют — только создают атмосферу)
+    for (const spider of this.spiders) {
+      spider.update(dt, this.player, this.map, this.spiders);
+      // Звуковое и визуальное присутствие при близости
+      const sdx = spider.x - this.player.x;
+      const sdy = spider.y - this.player.y;
+      const sdist = Math.sqrt(sdx * sdx + sdy * sdy);
+      if (sdist < 300) {
+        if (Math.random() < dt * 0.3) {
+          this.sound.playSpiderAmbient();
+        }
+        if (sdist < 180) {
+          this.camera.shake(1.5); // лёгкое дрожание при близости
+        }
+      }
+    }
+
     // Подбор пропов
     for (const prop of this.props) {
       if (prop.collected) continue;
@@ -1634,6 +2097,11 @@ export class Game {
     // 5. Навьи
     for (const nav of this.navs) {
       nav.draw(ctx, camX, camY, this.sprites);
+    }
+
+    // 5.5. Пауки (редкие главные существа)
+    for (const spider of this.spiders) {
+      spider.draw(ctx, camX, camY, this.sprites);
     }
 
     // 6. Игрок

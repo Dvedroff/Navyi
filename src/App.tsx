@@ -121,8 +121,8 @@ function App() {
     }
   };
 
-  const fuelPct = (fuel / 100) * 100;
-  const spiritPct = (spirit / 100) * 100;
+  const fuelPct = Math.min(100, (fuel / 140) * 100);
+  const spiritPct = Math.min(100, (spirit / 100) * 100);
 
   return (
     <div className="game-container">
