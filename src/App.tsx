@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Game, GameState } from './game/engine';
 
 function App() {
@@ -20,20 +20,21 @@ function App() {
   const [bloodActive, setBloodActive] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [wellAngle, setWellAngle] = useState(0);
+  const [mapOpen, setMapOpen] = useState(false);
 
   // Тост-таймер
   const toastTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
-  const showToast = useCallback((msg: string) => {
+  const showToast = (msg: string) => {
     setToast(msg);
     setToastVisible(true);
     clearTimeout(toastTimerRef.current);
     toastTimerRef.current = setTimeout(() => setToastVisible(false), 4000);
-  }, []);
+  };
 
   // HUD throttled до 8 Hz
   const lastHudRef = useRef(0);
-  const updateHUD = useCallback((now: number) => {
+  const updateHUD = (now: number) => {
     if (now - lastHudRef.current < 125) return;
     lastHudRef.current = now;
     const g = gameRef.current;
@@ -44,10 +45,11 @@ function App() {
     setWellOpen(g.wellOpen);
     setBloodActive(g.player.spirit < 35);
     if (g.wellOpen) setWellAngle(g.wellAngle);
-  }, []);
+    setMapOpen(g.mapOpen);
+  };
 
   // Игровой цикл
-  const gameLoop = useCallback((now: number) => {
+  const gameLoop = (now: number) => {
     rafRef.current = requestAnimationFrame(gameLoop);
     const g = gameRef.current;
     if (!g) return;
@@ -59,11 +61,14 @@ function App() {
     try {
       g.update(dt);
       g.render();
+      if (g.mapOpen) {
+        g.renderFullMap();
+      }
       updateHUD(now);
     } catch (e) {
       console.error('Game loop error:', e);
     }
-  }, [updateHUD]);
+  };
 
   // Инициализация
   useEffect(() => {
@@ -98,7 +103,8 @@ function App() {
     return () => {
       cancelAnimationFrame(rafRef.current);
     };
-  }, [gameLoop, showToast]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Пустые зависимости — инициализация только один раз
 
   // Начало игры
   const handleStart = () => {
@@ -167,8 +173,38 @@ function App() {
             zIndex: 15,
             textAlign: 'center'
           }}>
-            ← тач слева: движение · тач справа: вспышка →
+            ← тач слева: движение · тач справа: вспышка · кнопка ниже: карта →
           </div>
+
+          {/* Кнопка карты для мобильных */}
+          <button
+            onClick={() => {
+              if (gameRef.current) {
+                gameRef.current.mapOpen = !gameRef.current.mapOpen;
+              }
+            }}
+            style={{
+              position: 'fixed',
+              top: '16px',
+              right: '170px',
+              width: '32px',
+              height: '32px',
+              borderRadius: '4px',
+              background: 'rgba(30,25,20,0.6)',
+              border: '1px solid rgba(100,80,60,0.3)',
+              color: '#8a7a6a',
+              fontSize: '14px',
+              cursor: 'pointer',
+              zIndex: 25,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              pointerEvents: 'auto'
+            }}
+            title="Карта (Tab)"
+          >
+            🗺
+          </button>
         </>
       )}
 
