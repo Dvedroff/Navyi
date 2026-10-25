@@ -20,6 +20,7 @@ function App() {
   const [bloodActive, setBloodActive] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [wellAngle, setWellAngle] = useState(0);
+  const [mapOpen, setMapOpen] = useState(false);
 
   // Тост-таймер
   const toastTimerRef = useRef<ReturnType<typeof setTimeout>>();
@@ -44,6 +45,7 @@ function App() {
     setWellOpen(g.wellOpen);
     setBloodActive(g.player.spirit < 35);
     if (g.wellOpen) setWellAngle(g.wellAngle);
+    setMapOpen(g.mapOpen);
   };
 
   // Игровой цикл
@@ -59,6 +61,9 @@ function App() {
     try {
       g.update(dt);
       g.render();
+      if (g.mapOpen) {
+        g.renderFullMap();
+      }
       updateHUD(now);
     } catch (e) {
       console.error('Game loop error:', e);
@@ -168,8 +173,38 @@ function App() {
             zIndex: 15,
             textAlign: 'center'
           }}>
-            ← тач слева: движение · тач справа: вспышка →
+            ← тач слева: движение · тач справа: вспышка · кнопка ниже: карта →
           </div>
+
+          {/* Кнопка карты для мобильных */}
+          <button
+            onClick={() => {
+              if (gameRef.current) {
+                gameRef.current.mapOpen = !gameRef.current.mapOpen;
+              }
+            }}
+            style={{
+              position: 'fixed',
+              top: '16px',
+              right: '170px',
+              width: '32px',
+              height: '32px',
+              borderRadius: '4px',
+              background: 'rgba(30,25,20,0.6)',
+              border: '1px solid rgba(100,80,60,0.3)',
+              color: '#8a7a6a',
+              fontSize: '14px',
+              cursor: 'pointer',
+              zIndex: 25,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              pointerEvents: 'auto'
+            }}
+            title="Карта (Tab)"
+          >
+            🗺
+          </button>
         </>
       )}
 

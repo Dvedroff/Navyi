@@ -1,5 +1,6 @@
 // === НАВЬ: Последний Факел — Игровой движок ===
 import { CFG } from './CFG';
+import { MapTracker } from './MapTracker';
 
 // === Шина событий ===
 type Handler = (...args: any[]) => void;
@@ -1703,6 +1704,7 @@ export class Game {
   director: Director;
   particles = new Particles();
   quality = new QualityAdapter();
+  mapTracker = new MapTracker();
 
   // Состояние
   state: GameState = 'menu';
@@ -1717,6 +1719,7 @@ export class Game {
   wellOpen = false;
   deathMsg = '';
   wellAngle = 0;
+  mapOpen = false;
   fps = 60;
   private lastFpsTime = 0;
   private frameCount = 0;
@@ -1798,6 +1801,10 @@ export class Game {
     // Клавиша паузы
     window.addEventListener('keydown', (e) => {
       if (e.code === 'KeyP' || e.code === 'Escape') {
+        if (this.mapOpen) {
+          this.mapOpen = false;
+          return;
+        }
         if (this.state === 'play') {
           this.state = 'pause';
           this.onStateChange?.('pause');
@@ -1809,6 +1816,12 @@ export class Game {
       }
       if (e.code === 'KeyM') {
         this.sound.toggle();
+      }
+      if (e.code === 'Tab') {
+        e.preventDefault();
+        if (this.state === 'play' || this.state === 'pause') {
+          this.mapOpen = !this.mapOpen;
+        }
       }
     });
   }
@@ -1865,6 +1878,8 @@ export class Game {
     this.score = 0;
     this.wellOpen = false;
     this.deathMsg = '';
+    this.mapTracker.reset();
+    this.mapOpen = false;
 
     // Спавн игрока в первой комнате
     const startRoom = this.map.rooms[0];
@@ -2067,6 +2082,9 @@ export class Game {
     // Партикли
     this.particles.update(dt, this.camera.x, this.camera.y, this.viewW, this.viewH);
 
+    // Трекер карты
+    this.mapTracker.update(dt, this.player.x, this.player.y, this.navs, this.spiders, this.player.getTorchRadius());
+
     // FPS
     this.frameCount++;
     const now = performance.now();
@@ -2147,6 +2165,29 @@ export class Game {
       ctx.fillRect(0, 0, this.viewW, this.viewH);
       ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = 'source-over';
+    }
+
+    // 10. Мини-карта (полупрозрачная, всегда видна)
+    if (!this.mapOpen) {
+      const ms = CFG.MINIMAP_SIZE;
+      const mx = this.viewW - ms - CFG.MINIMAP_MARGIN;
+      const my = CFG.MINIMAP_MARGIN;
+      const relicsForMap = this.props.filter(p => p.type === 'relic').map(p => ({
+        x: p.x, y: p.y, collected: p.collected
+      }));
+      this.mapTracker.render(
+        ctx, this.map,
+        this.player.x, this.player.y, this.player.angle,
+        this.wellPos.x, this.wellPos.y, this.wellOpen,
+        relicsForMap,
+        mx, my, ms, false
+      );
+      // Подсказка
+      ctx.globalAlpha = 0.4;
+      ctx.fillStyle = '#6a5a4a';
+      ctx.font = '9px monospace';
+      ctx.fillText('TAB — карта', mx + 4, my + ms + 12);
+      ctx.globalAlpha = 1;
     }
   }
 
@@ -2232,6 +2273,100 @@ export class Game {
     this.onWin?.(this.score);
     this.onStateChange?.('win');
     this.saveRecord();
+  }
+
+  renderFullMap() {
+    if (!this.ctx || this.state === 'menu' || this.state === 'loading') return;
+    const ctx = this.ctx;
+
+    // Затемнение фона
+    ctx.fillStyle = 'rgba(4,5,7,0.85)';
+    ctx.fillRect(0, 0, this.viewW, this.viewH);
+
+    // Размер карты — максимум из доступного пространства
+    const maxMapSize = Math.min(this.viewW - 80, this.viewH - 120, 600);
+    const mapSize = Math.max(300, maxMapSize);
+    const mx = (this.viewW - mapSize) / 2;
+    const my = (this.viewH - mapSize) / 2;
+
+    // Заголовок
+    ctx.fillStyle = '#8a7a6a';
+    ctx.font = '14px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('— КАРТА ПОДКЛЕТЕЙ —', this.viewW / 2, my - 20);
+
+    // Рендер карты
+    const relicsForMap = this.props.filter(p => p.type === 'relic').map(p => ({
+      x: p.x, y: p.y, collected: p.collected
+    }));
+    this.mapTracker.render(
+      ctx, this.map,
+      this.player.x, this.player.y, this.player.angle,
+      this.wellPos.x, this.wellPos.y, this.wellOpen,
+      relicsForMap,
+      mx, my, mapSize, true
+    );
+
+    // Легенда
+    ctx.textAlign = 'left';
+    ctx.font = '11px monospace';
+    const legendY = my + mapSize + 24;
+    const legendX = mx;
+
+    ctx.fillStyle = CFG.MAP_PLAYER_COLOR;
+    ctx.beginPath();
+    ctx.arc(legendX + 4, legendY, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#6a5a4a';
+    ctx.fillText('Вы', legendX + 12, legendY + 4);
+
+    ctx.fillStyle = CFG.MAP_RELIC_COLOR;
+    ctx.beginPath();
+    ctx.moveTo(legendX + 60, legendY - 3);
+    ctx.lineTo(legendX + 66, legendY - 3);
+    ctx.moveTo(legendX + 63, legendY - 6);
+    ctx.lineTo(legendX + 63, legendY);
+    ctx.strokeStyle = CFG.MAP_RELIC_COLOR;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#6a5a4a';
+    ctx.fillText('Оберег', legendX + 72, legendY + 4);
+
+    ctx.strokeStyle = CFG.MAP_WELL_COLOR;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(legendX + 130, legendY, 4, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = '#6a5a4a';
+    ctx.fillText('Колодец', legendX + 140, legendY + 4);
+
+    ctx.fillStyle = CFG.MAP_MONSTER_COLOR;
+    ctx.beginPath();
+    ctx.arc(legendX + 205, legendY, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#6a5a4a';
+    ctx.fillText('Тварь', legendX + 214, legendY + 4);
+
+    ctx.fillStyle = CFG.MAP_SPIDER_COLOR;
+    ctx.beginPath();
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2;
+      ctx.moveTo(legendX + 265, legendY);
+      ctx.lineTo(legendX + 265 + Math.cos(a) * 4, legendY + Math.sin(a) * 4);
+    }
+    ctx.strokeStyle = CFG.MAP_SPIDER_COLOR;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = '#6a5a4a';
+    ctx.fillText('Паук', legendX + 275, legendY + 4);
+
+    // Подсказка закрытия
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#5a4a3a';
+    ctx.font = '11px monospace';
+    ctx.fillText('TAB / ESC — закрыть', this.viewW / 2, legendY + 30);
+
+    ctx.textAlign = 'start';
   }
 
   private saveRecord() {
