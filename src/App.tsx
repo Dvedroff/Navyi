@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Game, GameState } from './game/engine';
 
 function App() {
@@ -24,16 +24,16 @@ function App() {
   // Тост-таймер
   const toastTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
-  const showToast = useCallback((msg: string) => {
+  const showToast = (msg: string) => {
     setToast(msg);
     setToastVisible(true);
     clearTimeout(toastTimerRef.current);
     toastTimerRef.current = setTimeout(() => setToastVisible(false), 4000);
-  }, []);
+  };
 
   // HUD throttled до 8 Hz
   const lastHudRef = useRef(0);
-  const updateHUD = useCallback((now: number) => {
+  const updateHUD = (now: number) => {
     if (now - lastHudRef.current < 125) return;
     lastHudRef.current = now;
     const g = gameRef.current;
@@ -44,10 +44,10 @@ function App() {
     setWellOpen(g.wellOpen);
     setBloodActive(g.player.spirit < 35);
     if (g.wellOpen) setWellAngle(g.wellAngle);
-  }, []);
+  };
 
   // Игровой цикл
-  const gameLoop = useCallback((now: number) => {
+  const gameLoop = (now: number) => {
     rafRef.current = requestAnimationFrame(gameLoop);
     const g = gameRef.current;
     if (!g) return;
@@ -63,7 +63,7 @@ function App() {
     } catch (e) {
       console.error('Game loop error:', e);
     }
-  }, [updateHUD]);
+  };
 
   // Инициализация
   useEffect(() => {
@@ -98,7 +98,8 @@ function App() {
     return () => {
       cancelAnimationFrame(rafRef.current);
     };
-  }, [gameLoop, showToast]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Пустые зависимости — инициализация только один раз
 
   // Начало игры
   const handleStart = () => {

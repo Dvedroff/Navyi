@@ -1215,6 +1215,7 @@ export class LiquidSpider {
   alive = true;
   anchors: Anchor[] = [];
   spawnAlpha = 0; // эффект проявления (0→1 за 3 секунды)
+  private anchorRegenTimer = 5; // регенерация якорей каждые 5с
 
   constructor(x: number, y: number, id: number) {
     this.id = id;
@@ -1310,8 +1311,6 @@ export class LiquidSpider {
       t.anchor.claimedBy = null;
     }
   }
-
-  private anchorRegenTimer = 5; // регенерация якорей каждые 5с
 
   update(dt: number, player: Player, map: GameMap, spiders: LiquidSpider[]) {
     if (!this.alive) return;
@@ -1741,7 +1740,11 @@ export class Game {
 
   init(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext('2d')!;
+    this.ctx = canvas.getContext('2d');
+    if (!this.ctx) {
+      console.error('Failed to get 2d context');
+      return;
+    }
     this.sprites.build();
     this.input.init();
     this.sound.init();
@@ -1827,20 +1830,30 @@ export class Game {
   }
 
   startGame() {
-    this.state = 'loading';
-    this.onStateChange?.('loading');
+    try {
+      this.state = 'loading';
+      this.onStateChange?.('loading');
 
-    // Ленивая генерация — даём браузеру отрисовать loading
-    requestAnimationFrame(() => {
+      // Ленивая генерация — даём браузеру отрисовать loading
       requestAnimationFrame(() => {
-        this.seed = Date.now();
-        this.map.generate(this.seed);
-        this.setupLevel();
-        this.state = 'play';
-        this.onStateChange?.('play');
-        this.sound.resume();
+        requestAnimationFrame(() => {
+          try {
+            this.seed = Date.now();
+            this.map.generate(this.seed);
+            this.setupLevel();
+            this.state = 'play';
+            this.onStateChange?.('play');
+            this.sound.resume();
+          } catch (e) {
+            console.error('Game start error:', e);
+            this.state = 'menu';
+            this.onStateChange?.('menu');
+          }
+        });
       });
-    });
+    } catch (e) {
+      console.error('Game start error:', e);
+    }
   }
 
   private setupLevel() {
